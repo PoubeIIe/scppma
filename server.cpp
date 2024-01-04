@@ -14,7 +14,7 @@ void broadcastMessage(int senderSocket, const char* message, const char* usernam
     for (int clientSocket : clientSockets) {
         // Envoyer le message formaté à tous les clients sauf l'expéditeur
         if (clientSocket != senderSocket) {
-            std::string formattedMessage = message;
+            std::string formattedMessage = username + std::string(":") + message;
             send(clientSocket, formattedMessage.c_str(), formattedMessage.size(), 0);
         }
     }
@@ -27,7 +27,7 @@ void handleClient(int clientSocket, struct sockaddr_in clientAddr) {
     // Afficher l'adresse IP du client
     char clientIP[INET_ADDRSTRLEN];
     inet_ntop(AF_INET, &(clientAddr.sin_addr), clientIP, INET_ADDRSTRLEN);
-    std::cout << "Client " << clientIP << " connecté !" << std::endl;
+    //std::cout << "Client " << clientIP << " connecté !" << std::endl;
 
     // Demander le nom d'utilisateur au client
     char username[256];
@@ -40,8 +40,10 @@ void handleClient(int clientSocket, struct sockaddr_in clientAddr) {
     username[bytesRead] = '\0';
 
     // Envoyer un message de bienvenue au client avec son nom d'utilisateur
-    const char* welcomeMessage = "Bienvenue sur le serveur !";
-    send(clientSocket, welcomeMessage, strlen(welcomeMessage), 0);
+    // const char* welcomeMessage = "Bienvenue sur le serveur !";
+    // send(clientSocket, welcomeMessage, strlen(welcomeMessage), 0);
+
+    std::cout << "Client " << username << " connecté !" << std::endl;
 
     // Boucle de réception de messages du client
     char buffer[1024];
@@ -56,20 +58,20 @@ void handleClient(int clientSocket, struct sockaddr_in clientAddr) {
                                      [clientSocket](int s) { return s == clientSocket; });
             clientSockets.erase(it, clientSockets.end());
 
-            std::cout << "Client " << clientIP << " déconnecté." << std::endl;
+            std::cout << "Client " << username << " déconnecté." << std::endl;
             break;
         }
 
         // Afficher le message reçu du client
         buffer[bytesRead] = '\0';
-        std::cout << "Message du client " << username << ": " << buffer << std::endl;
+        std::cout << "Message du client [" << username <<"] :" << buffer << std::endl;
 
         // Diffuser le message formaté à tous les autres clients
         broadcastMessage(clientSocket, buffer, username);
     }
 
     // Fermeture du socket du client
-    close(clientSocket);
+    //close(clientSocket);
 }
 
 int main() {
