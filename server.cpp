@@ -4,35 +4,91 @@
 #include <iostream>
 #include <vector>
 #include <algorithm>
+#include <cstring>
 
 std::vector<TCPsocket> clientSockets;
 SDL_mutex* clientMutex;
+
+void displayMessage(const char* message) {
+    SDL_LockMutex(clientMutex);
+    std::cout << message << std::endl;
+    SDL_UnlockMutex(clientMutex);
+}
 
 int receiveMessages(void* data) {
     TCPsocket clientSocket = reinterpret_cast<TCPsocket>(data);
     char buffer[1024];
 
+    // Receive the username from the client
+    char username[256];
+    ssize_t bytesRead = SDLNet_TCP_Recv(clientSocket, username, sizeof(username));
+
+    if (bytesRead <= 0) {
+        std::cerr << "Error receiving username." << std::endl;
+        SDL_LockMutex(clientMutex);
+        auto it = std::remove_if(clientSockets.begin(), clientSockets.end(),
+                                 [clientSocket](TCPsocket s) { return s == clientSocket; });
+        clientSockets.erase(it, clientSockets.end());
+        SDL_UnlockMutex(clientMutex);
+
+        SDLNet_TCP_Close(clientSocket);
+        return 1;
+    }
+    username[bytesRead] = '\0';
+
+    SDL_LockMutex(clientMutex);
+    std::cout << "Client " << username << " connected!" << std::endl;
+    SDL_UnlockMutex(clientMutex);
+
     while (true) {
-        int bytesRead = SDLNet_TCP_Recv(clientSocket, buffer, sizeof(buffer));
+        bytesRead = SDLNet_TCP_Recv(clientSocket, buffer, sizeof(buffer));
 
         if (bytesRead <= 0) {
-            std::cout << "Client disconnected." << std::endl;
+            SDL_LockMutex(clientMutex);
+            auto it = std::remove_if(clientSockets.begin(), clientSockets.end(),
+                                     [clientSocket](TCPsocket s) { return s == clientSocket; });
+            clientSockets.erase(it, clientSockets.end());
+            SDL_UnlockMutex(clientMutex);
+
+            SDLNet_TCP_Close(clientSocket);
+
+            SDL_LockMutex(clientMutex);
+            std::cout << "Client " << username << " disconnected." << std::endl;
+            SDL_UnlockMutex(clientMutex);
+
+            // Notify other clients about the disconnection
+            char disconnectMsg[256];
+            snprintf(disconnectMsg, sizeof(disconnectMsg), "Client %s disconnected.", username);
+            SDL_LockMutex(clientMutex);
+            for (TCPsocket otherClientSocket : clientSockets) {
+                if (otherClientSocket != clientSocket) {
+                    SDLNet_TCP_Send(otherClientSocket, disconnectMsg, strlen(disconnectMsg) + 1);
+                }
+            }
+            SDL_UnlockMutex(clientMutex);
+
             break;
         }
 
         buffer[bytesRead] = '\0';
-        std::cout << "Received message from client: " << buffer << std::endl;
+
+        // Notify other clients about the message
+        char broadcastMsg[1280];  // Adjust the size as needed
+        snprintf(broadcastMsg, sizeof(broadcastMsg), "[%s] : %s", username, buffer);
+
+        SDL_LockMutex(clientMutex);
+        for (TCPsocket otherClientSocket : clientSockets) {
+            if (otherClientSocket != clientSocket) {
+                SDLNet_TCP_Send(otherClientSocket, broadcastMsg, strlen(broadcastMsg) + 1);
+            }
+        }
+        SDL_UnlockMutex(clientMutex);
+
+        // Display the message in the server's console
+        displayMessage(broadcastMsg);
     }
 
-    SDL_LockMutex(clientMutex);
-    auto it = std::remove_if(clientSockets.begin(), clientSockets.end(),
-                             [clientSocket](TCPsocket s) { return s == clientSocket; });
-    clientSockets.erase(it, clientSockets.end());
-    SDL_UnlockMutex(clientMutex);
-
-    SDLNet_TCP_Close(clientSocket);
-
-    return 0; // Return an integer value
+    return 0;
 }
 
 int handleClient(void* data) {
@@ -42,14 +98,10 @@ int handleClient(void* data) {
     clientSockets.push_back(clientSocket);
     SDL_UnlockMutex(clientMutex);
 
-    std::cout << "Client connected." << std::endl;
-
     SDL_Thread* receiveThread = SDL_CreateThread(receiveMessages, "ReceiveThread", clientSocket);
     SDL_WaitThread(receiveThread, NULL);
 
-    std::cout << "Client disconnected." << std::endl;
-
-    return 0; // Return an integer value
+    return 0;
 }
 
 int main() {
@@ -86,7 +138,6 @@ int main() {
         if (clientSocket) {
             SDL_Thread* clientThread = SDL_CreateThread(handleClient, "ClientThread", clientSocket);
         }
-
     }
 
     SDLNet_TCP_Close(serverSocket);
