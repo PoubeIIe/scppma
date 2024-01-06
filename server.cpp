@@ -1,109 +1,89 @@
+#define SDL_MAIN_HANDLED
+#include <SDL2/SDL.h>
+#include <SDL2/SDL_net.h>
+#include <winsock2.h>  // Include for inet_addr and htons on Windows
 #include <iostream>
-#include <cstring>
-#include <sys/socket.h>
-#include <netinet/in.h>
-#include <unistd.h>
-#include <arpa/inet.h>
 #include <thread>
-#include <vector>
-#include <algorithm>
 
-std::vector<int> clientSockets;
+TCPsocket clientSocket;
 
-void broadcastMessage(int senderSocket, const char* message, const char* username) {
-    for (int clientSocket : clientSockets) {
-        // Envoyer le message formaté à tous les clients sauf l'expéditeur
-        if (clientSocket != senderSocket) {
-            std::string formattedMessage = username + std::string(":") + message;
-            send(clientSocket, formattedMessage.c_str(), formattedMessage.size(), 0);
-        }
-    }
-}
-
-void handleClient(int clientSocket, struct sockaddr_in clientAddr) {
-    // Ajouter le socket du client à la liste
-    clientSockets.push_back(clientSocket);
-
-    // Afficher l'adresse IP du client
-    char clientIP[INET_ADDRSTRLEN];
-    inet_ntop(AF_INET, &(clientAddr.sin_addr), clientIP, INET_ADDRSTRLEN);
-    //std::cout << "Client " << clientIP << " connecté !" << std::endl;
-
-    // Demander le nom d'utilisateur au client
-    char username[256];
-    ssize_t bytesRead = recv(clientSocket, username, sizeof(username), 0);
-    if (bytesRead <= 0) {
-        std::cerr << "Erreur de réception du nom d'utilisateur." << std::endl;
-        close(clientSocket);
-        return;
-    }
-    username[bytesRead] = '\0';
-
-    // Envoyer un message de bienvenue au client avec son nom d'utilisateur
-    // const char* welcomeMessage = "Bienvenue sur le serveur !";
-    // send(clientSocket, welcomeMessage, strlen(welcomeMessage), 0);
-
-    std::cout << "Client " << username << " connecté !" << std::endl;
-
-    // Boucle de réception de messages du client
+int receiveMessages(void* data) {
     char buffer[1024];
     while (true) {
-        // Recevoir un message du client
-        bytesRead = recv(clientSocket, buffer, sizeof(buffer), 0);
+        int bytesRead = SDLNet_TCP_Recv(clientSocket, buffer, sizeof(buffer));
 
-        // Vérifier si la connexion a été fermée par le client
         if (bytesRead <= 0) {
-            // Supprimer le socket du client de la liste
-            auto it = std::remove_if(clientSockets.begin(), clientSockets.end(),
-                                     [clientSocket](int s) { return s == clientSocket; });
-            clientSockets.erase(it, clientSockets.end());
-
-            std::cout << "Client " << username << " déconnecté." << std::endl;
+            std::cout << "Connection to the server closed." << std::endl;
             break;
         }
 
-        // Afficher le message reçu du client
         buffer[bytesRead] = '\0';
-        std::cout << "Message du client [" << username <<"] :" << buffer << std::endl;
-
-        // Diffuser le message formaté à tous les autres clients
-        broadcastMessage(clientSocket, buffer, username);
+        std::cout << buffer << std::endl;
     }
 
-    // Fermeture du socket du client
-    //close(clientSocket);
+    return 0;
 }
 
+void stopClient() {
+    SDLNet_TCP_Close(clientSocket);
+}
+
+
 int main() {
-    // Création du socket
-    int serverSocket = socket(AF_INET, SOCK_STREAM, 0);
+    // Demander à l'utilisateur l'adresse IP du serveur
+    std::string IPaddr;
+    std::cout << "Entrez l'adresse IP du serveur : ";
+    std::cin >> IPaddr;
+    
+    // Demander à l'utilisateur le port du serveur
+    int serverPort;
+    std::cout << "Entrez le port du serveur : ";
+    std::cin >> serverPort;
+    
+    std::string username;
+    std::cout << "Entrez votre nom d'utilisateur : ";
+    std::cin>>username;
+    std::cout << "UN entré" << std::endl;
 
-    // Configuration de l'adresse du serveur
-    struct sockaddr_in serverAddr;
-    serverAddr.sin_family = AF_INET;
-    serverAddr.sin_port = htons(12345); // Port
-    serverAddr.sin_addr.s_addr = INADDR_ANY; // Adresse IP du serveur
 
-    // Liaison du socket avec l'adresse
-    bind(serverSocket, (struct sockaddr*)&serverAddr, sizeof(serverAddr));
+    IPaddress serverIP;
+    std::cout << "instanctaiton de serverIP" << std::endl;
+    // Include <winsock2.h> instead of arpa/inet.h
+    serverIP.host = inet_addr(IPaddr.c_str()); // Server IP address
+    serverIP.port = htons(serverPort); // Server port
+    std::cout << "trucs d'ip" << std::endl;
 
-    // Attente de connexions
-    listen(serverSocket, 5);
+    // Connect to the server
+    clientSocket = SDLNet_TCP_Open(&serverIP);
+    if (!clientSocket) {
+        std::cerr << "Connection to the server failed." << std::endl;
+        stopClient();
+        return 1;
+    }
 
-    std::cout << "Le serveur attend des connexions..." << std::endl;
+    // Send the username to the server
+    SDLNet_TCP_Send(clientSocket, username.c_str(), username.size() + 1);
+    std::cout << "Connected to the server!" << std::endl;
 
+    // Create a thread to receive messages from the server
+    SDL_Thread* receiveThread = SDL_CreateThread(receiveMessages, "ReceiveThread", NULL);
+    if (!receiveThread) {
+        std::cerr << "Failed to create receive thread: " << SDL_GetError() << std::endl;
+        stopClient();
+        return 2;
+    }
+
+    // Boucle d'envoi de messages au serveur
+    std::string userInput;
     while (true) {
-        // Accepter une connexion
-        struct sockaddr_in clientAddr;
-        socklen_t clientAddrLen = sizeof(clientAddr);
-        int clientSocket = accept(serverSocket, (struct sockaddr*)&clientAddr, &clientAddrLen);
-
-        // Créer un thread pour traiter la connexion du client
-        std::thread(handleClient, clientSocket, clientAddr).detach();
+        std::getline(std::cin, userInput);
+    
+        SDLNet_TCP_Send(clientSocket, userInput.c_str(), userInput.size() +1);
     }
 
     // Le code ci-dessous ne sera jamais atteint, car la boucle est infinie
-    close(serverSocket);
+
+    // The code below will never be reached, as the thread is detached
 
     return 0;
 }
