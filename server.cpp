@@ -1,89 +1,97 @@
 #define SDL_MAIN_HANDLED
 #include <SDL2/SDL.h>
 #include <SDL2/SDL_net.h>
-#include <winsock2.h>  // Include for inet_addr and htons on Windows
 #include <iostream>
-#include <thread>
+#include <vector>
+#include <algorithm>
 
-TCPsocket clientSocket;
+std::vector<TCPsocket> clientSockets;
+SDL_mutex* clientMutex;
 
 int receiveMessages(void* data) {
+    TCPsocket clientSocket = reinterpret_cast<TCPsocket>(data);
     char buffer[1024];
+
     while (true) {
         int bytesRead = SDLNet_TCP_Recv(clientSocket, buffer, sizeof(buffer));
 
         if (bytesRead <= 0) {
-            std::cout << "Connection to the server closed." << std::endl;
+            std::cout << "Client disconnected." << std::endl;
             break;
         }
 
         buffer[bytesRead] = '\0';
-        std::cout << buffer << std::endl;
+        std::cout << "Received message from client: " << buffer << std::endl;
     }
 
-    return 0;
-}
+    SDL_LockMutex(clientMutex);
+    auto it = std::remove_if(clientSockets.begin(), clientSockets.end(),
+                             [clientSocket](TCPsocket s) { return s == clientSocket; });
+    clientSockets.erase(it, clientSockets.end());
+    SDL_UnlockMutex(clientMutex);
 
-void stopClient() {
     SDLNet_TCP_Close(clientSocket);
+
+    return 0; // Return an integer value
 }
 
+int handleClient(void* data) {
+    TCPsocket clientSocket = reinterpret_cast<TCPsocket>(data);
+
+    SDL_LockMutex(clientMutex);
+    clientSockets.push_back(clientSocket);
+    SDL_UnlockMutex(clientMutex);
+
+    std::cout << "Client connected." << std::endl;
+
+    SDL_Thread* receiveThread = SDL_CreateThread(receiveMessages, "ReceiveThread", clientSocket);
+    SDL_WaitThread(receiveThread, NULL);
+
+    std::cout << "Client disconnected." << std::endl;
+
+    return 0; // Return an integer value
+}
 
 int main() {
-    // Demander à l'utilisateur l'adresse IP du serveur
-    std::string IPaddr;
-    std::cout << "Entrez l'adresse IP du serveur : ";
-    std::cin >> IPaddr;
-    
-    // Demander à l'utilisateur le port du serveur
-    int serverPort;
-    std::cout << "Entrez le port du serveur : ";
-    std::cin >> serverPort;
-    
-    std::string username;
-    std::cout << "Entrez votre nom d'utilisateur : ";
-    std::cin>>username;
-    std::cout << "UN entré" << std::endl;
-
-
-    IPaddress serverIP;
-    std::cout << "instanctaiton de serverIP" << std::endl;
-    // Include <winsock2.h> instead of arpa/inet.h
-    serverIP.host = inet_addr(IPaddr.c_str()); // Server IP address
-    serverIP.port = htons(serverPort); // Server port
-    std::cout << "trucs d'ip" << std::endl;
-
-    // Connect to the server
-    clientSocket = SDLNet_TCP_Open(&serverIP);
-    if (!clientSocket) {
-        std::cerr << "Connection to the server failed." << std::endl;
-        stopClient();
+    if (SDL_Init(0) == -1 || SDLNet_Init() == -1) {
+        fprintf(stderr, "SDL or SDL_net initialization failed: %s\n", SDL_GetError());
         return 1;
     }
 
-    // Send the username to the server
-    SDLNet_TCP_Send(clientSocket, username.c_str(), username.size() + 1);
-    std::cout << "Connected to the server!" << std::endl;
+    clientMutex = SDL_CreateMutex();
 
-    // Create a thread to receive messages from the server
-    SDL_Thread* receiveThread = SDL_CreateThread(receiveMessages, "ReceiveThread", NULL);
-    if (!receiveThread) {
-        std::cerr << "Failed to create receive thread: " << SDL_GetError() << std::endl;
-        stopClient();
+    IPaddress serverIP;
+    TCPsocket serverSocket;
+
+    if (SDLNet_ResolveHost(&serverIP, NULL, 12345) == -1) {
+        fprintf(stderr, "SDLNet_ResolveHost: %s\n", SDLNet_GetError());
+        SDLNet_Quit();
+        SDL_Quit();
         return 2;
     }
 
-    // Boucle d'envoi de messages au serveur
-    std::string userInput;
-    while (true) {
-        std::getline(std::cin, userInput);
-    
-        SDLNet_TCP_Send(clientSocket, userInput.c_str(), userInput.size() +1);
+    serverSocket = SDLNet_TCP_Open(&serverIP);
+    if (!serverSocket) {
+        fprintf(stderr, "SDLNet_TCP_Open: %s\n", SDLNet_GetError());
+        SDLNet_Quit();
+        SDL_Quit();
+        return 3;
     }
 
-    // Le code ci-dessous ne sera jamais atteint, car la boucle est infinie
+    printf("The server is waiting for connections...\n");
 
-    // The code below will never be reached, as the thread is detached
+    while (true) {
+        TCPsocket clientSocket = SDLNet_TCP_Accept(serverSocket);
+
+        if (clientSocket) {
+            SDL_Thread* clientThread = SDL_CreateThread(handleClient, "ClientThread", clientSocket);
+        }
+
+    }
+
+    SDLNet_TCP_Close(serverSocket);
+    SDLNet_Quit();
+    SDL_Quit();
 
     return 0;
 }
